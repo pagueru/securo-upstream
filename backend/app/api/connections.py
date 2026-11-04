@@ -46,7 +46,9 @@ async def create_connect_token(
 ):
     """Create a connect token for widget-based bank connection flows."""
     try:
-        token_data = await connection_service.create_connect_token(data.provider, ctx.user_id)
+        token_data = await connection_service.create_connect_token(
+            data.provider, ctx.user_id, workspace_id=ctx.workspace.id
+        )
         return ConnectTokenResponse(**token_data)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
@@ -86,7 +88,9 @@ async def list_provider_institutions(
     ctx: WorkspaceContext = Depends(current_workspace),
 ):
     try:
-        return await connection_service.list_provider_institutions(provider, country)
+        return await connection_service.list_provider_institutions(
+            provider, country, workspace_id=ctx.workspace.id
+        )
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except Exception as e:
@@ -230,9 +234,14 @@ async def get_reconnect_token(
 
     try:
         token_data = await connection_service.create_connect_token(
-            connection.provider, ctx.user_id, item_id=item_id
+            connection.provider,
+            ctx.user_id,
+            item_id=item_id,
+            workspace_id=ctx.workspace.id,
         )
         return ReconnectTokenResponse(**token_data)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
