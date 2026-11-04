@@ -15,7 +15,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.core.config import Settings
-from app.providers import _PROVIDERS, get_provider, register_provider
+from app.providers import (
+    _PROVIDERS,
+    _auto_register_providers,
+    get_provider,
+    register_provider,
+)
 from app.providers.base import BankProvider
 from app.providers.pluggy import PluggyProvider
 from app.providers.pluggy_credentials import (
@@ -86,6 +91,18 @@ def _clear_caches():
 
 
 @pytest.fixture
+def isolated_provider_registry():
+    """Empty the provider registry for startup tests and restore it after."""
+    saved = dict(_PROVIDERS)
+    _PROVIDERS.clear()
+    get_workspace_credentials.cache_clear()
+    yield
+    _PROVIDERS.clear()
+    _PROVIDERS.update(saved)
+    get_workspace_credentials.cache_clear()
+
+
+@pytest.fixture
 def pluggy_registered():
     """Register the Pluggy provider for registry tests, restoring the previous state."""
     original = _PROVIDERS.get("pluggy")
@@ -114,6 +131,7 @@ def _patched_settings(settings: Settings) -> ExitStack:
     """Patch get_settings where the credential and Pluggy modules read it."""
     stack = ExitStack()
     for target in (
+        "app.core.config.get_settings",
         "app.providers.pluggy_credentials.get_settings",
         "app.providers.pluggy.get_settings",
     ):
@@ -188,6 +206,37 @@ def test_malformed_credentials_raise_without_leaking_the_secret(raw, expected):
     message = str(excinfo.value)
     assert "creds.json" in message
     assert expected in message
+    assert SECRET not in message
+
+
+def test_two_spellings_of_one_uuid_raise():
+    raw = json.dumps(
+        {
+            str(WS_A): {"client_id": "client-a", "client_secret": SECRET},
+            str(WS_A).upper(): {"client_id": "client-b", "client_secret": SECRET},
+        }
+    )
+
+    with pytest.raises(PluggyCredentialsError) as excinfo:
+        parse_workspace_credentials(raw, "creds.json")
+
+    message = str(excinfo.value)
+    assert "creds.json" in message
+    assert str(WS_A) in message
+    assert str(WS_A).upper() in message
+    assert SECRET not in message
+
+
+def test_repeated_workspace_key_raises():
+    entry = json.dumps({"client_id": "client-a", "client_secret": SECRET})
+    raw = f'{{"{WS_A}": {entry}, "{WS_A}": {entry}}}'
+
+    with pytest.raises(PluggyCredentialsError) as excinfo:
+        parse_workspace_credentials(raw, "creds.json")
+
+    message = str(excinfo.value)
+    assert "creds.json" in message
+    assert str(WS_A) in message
     assert SECRET not in message
 
 
@@ -299,3 +348,36 @@ def test_non_pluggy_provider_receives_the_workspace():
 
     assert isinstance(provider, RecordingProvider)
     assert provider.received == WS_A
+
+
+# --- Startup registration --------------------------------------------------
+
+
+def test_auto_register_providers_from_workspace_file_only(tmp_path, isolated_provider_registry):
+    path = _write_credentials_file(tmp_path, _payload())
+    settings = _settings(pluggy_workspace_credentials_file=path)
+
+    with _patched_settings(settings):
+        _auto_register_providers()
+
+    assert _PROVIDERS.get("pluggy") is PluggyProvider
+
+
+def test_auto_register_providers_rejects_a_malformed_file(tmp_path, isolated_provider_registry):
+    path = tmp_path / "workspace_credentials.json"
+    path.write_text("{not json", encoding="utf-8")
+    settings = _settings(pluggy_workspace_credentials_file=str(path))
+
+    with _patched_settings(settings), pytest.raises(PluggyCredentialsError):
+        _auto_register_providers()
+
+    assert "pluggy" not in _PROVIDERS
+
+
+def test_auto_register_providers_rejects_a_missing_file(tmp_path, isolated_provider_registry):
+    settings = _settings(pluggy_workspace_credentials_file=str(tmp_path / "does-not-exist.json"))
+
+    with _patched_settings(settings), pytest.raises(PluggyCredentialsError):
+        _auto_register_providers()
+
+    assert "pluggy" not in _PROVIDERS
