@@ -1,3 +1,4 @@
+import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import date
@@ -290,6 +291,15 @@ class BankProvider(ABC):
     def flow_type(self) -> str:
         """Connection flow type: 'oauth' for redirect-based, 'widget' for embedded widget."""
         return "oauth"
+
+    @classmethod
+    def for_workspace(cls, workspace_id: uuid.UUID | None) -> "BankProvider":
+        """Build the provider instance that serves one workspace.
+
+        Providers holding per-workspace configuration override this to bind
+        that workspace's credentials; the default ignores the argument.
+        """
+        return cls()
 
     @property
     def redirect_uri(self) -> str:

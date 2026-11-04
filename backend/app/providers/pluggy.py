@@ -4,6 +4,7 @@ import hashlib
 import json
 import logging
 import time
+import uuid
 from datetime import date
 from decimal import Decimal, InvalidOperation
 from typing import Optional
@@ -24,6 +25,10 @@ from app.providers.base import (
     mask_last4,
 )
 from app.providers.pluggy_constants import pluggy_icon_for_compe
+from app.providers.pluggy_credentials import (
+    PluggyCredentials,
+    resolve_pluggy_credentials,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -449,8 +454,14 @@ class PluggyProvider(BankProvider):
     3. Widget returns an Item ID which is used as the connection identifier
     """
 
-    _api_key: Optional[str] = None
-    _api_key_expires_at: float = 0
+    # Pluggy API keys, keyed by client_id: each credential set gets its own
+    # token so two clients never share or overwrite each other's key.
+    _api_keys: dict[str, tuple[str, float]] = {}
+
+    def __init__(self, credentials: Optional[PluggyCredentials] = None) -> None:
+        # Without explicit credentials the instance ones are resolved on the
+        # first API call, so PluggyProvider() still constructs unconfigured.
+        self._credentials = credentials
 
     @property
     def name(self) -> str:
@@ -460,28 +471,38 @@ class PluggyProvider(BankProvider):
     def flow_type(self) -> str:
         return "widget"
 
+    @classmethod
+    def for_workspace(cls, workspace_id: uuid.UUID | None) -> "PluggyProvider":
+        """Build a provider bound to the credentials of one workspace."""
+        return cls(resolve_pluggy_credentials(workspace_id))
+
     async def _ensure_api_key(self) -> str:
         """Get a valid API key, refreshing if expired or about to expire (<5min remaining)."""
-        now = time.time()
-        if self._api_key and (self._api_key_expires_at - now) > 300:
-            return self._api_key
+        credentials = self._credentials
+        if credentials is None:
+            credentials = resolve_pluggy_credentials(None)
+            self._credentials = credentials
 
-        settings = get_settings()
+        now = time.time()
+        cached = PluggyProvider._api_keys.get(credentials.client_id)
+        if cached and (cached[1] - now) > 300:
+            return cached[0]
+
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(
                 f"{PLUGGY_API_BASE}/auth",
                 json={
-                    "clientId": settings.pluggy_client_id,
-                    "clientSecret": settings.pluggy_client_secret.get_secret_value(),
+                    "clientId": credentials.client_id,
+                    "clientSecret": credentials.client_secret,
                 },
             )
             resp.raise_for_status()
             data = resp.json()
 
-        PluggyProvider._api_key = data["apiKey"]
+        api_key = data["apiKey"]
         # Pluggy API keys last 2 hours
-        PluggyProvider._api_key_expires_at = now + 7200
-        return PluggyProvider._api_key
+        PluggyProvider._api_keys[credentials.client_id] = (api_key, now + 7200)
+        return api_key
 
     async def _headers(self) -> dict:
         api_key = await self._ensure_api_key()

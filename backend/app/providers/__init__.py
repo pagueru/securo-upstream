@@ -1,3 +1,5 @@
+import uuid
+
 from app.providers.base import (
     AccountData,
     BankProvider,
@@ -49,13 +51,13 @@ def register_provider(name: str, cls: type[BankProvider]) -> None:
     _PROVIDERS[name] = cls
 
 
-def get_provider(name: str) -> BankProvider:
-    """Get an instance of a registered bank provider by name."""
+def get_provider(name: str, workspace_id: uuid.UUID | None = None) -> BankProvider:
+    """Get a registered bank provider instance, configured for one workspace."""
     provider_class = _PROVIDERS.get(name)
     if not provider_class:
         available = ", ".join(_PROVIDERS.keys()) or "(none)"
         raise ValueError(f"Unknown provider: {name}. Available: {available}")
-    return provider_class()
+    return provider_class.for_workspace(workspace_id)
 
 
 def list_providers() -> list[dict[str, str]]:
@@ -77,9 +79,17 @@ def all_known_providers() -> list[dict]:
 def _auto_register_providers() -> None:
     """Auto-register providers when credentials are configured."""
     from app.core.config import get_settings
+    from app.providers.pluggy_credentials import (
+        get_workspace_credentials,
+        instance_credentials,
+    )
+
     settings = get_settings()
 
-    if settings.pluggy_client_id and settings.pluggy_client_secret:
+    # Loading the map eagerly makes a malformed credentials file fail at startup.
+    has_instance_credentials = instance_credentials() is not None
+    has_workspace_credentials = bool(get_workspace_credentials())
+    if has_instance_credentials or has_workspace_credentials:
         from app.providers.pluggy import PluggyProvider
         register_provider("pluggy", PluggyProvider)
 
