@@ -31,6 +31,8 @@ class Settings(BaseSettings):
     # Pluggy
     pluggy_client_id: str = ""
     pluggy_client_secret: SecretStr = SecretStr("")
+    # JSON file mapping workspace UUIDs to their own Pluggy credentials.
+    pluggy_workspace_credentials_file: str = ""
     # Empty means "derive from FRONTEND_URL" (see BankProvider.redirect_uri).
     # Set explicitly only when the URL registered in the provider dashboard
     # differs from where the app is served.
