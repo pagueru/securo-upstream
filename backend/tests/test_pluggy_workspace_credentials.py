@@ -237,6 +237,13 @@ def test_resolve_without_mapping_or_instance_raises():
             resolve_pluggy_credentials(WS_A)
 
 
+def _pluggy_provider(workspace_id: uuid.UUID | None) -> PluggyProvider:
+    """Return the registered Pluggy provider for a workspace, narrowed for typing."""
+    provider = get_provider("pluggy", workspace_id)
+    assert isinstance(provider, PluggyProvider)
+    return provider
+
+
 # --- Provider registry and token cache -------------------------------------
 
 
@@ -253,10 +260,10 @@ async def test_get_provider_authenticates_with_the_workspace_client(tmp_path, pl
         _patched_settings(settings),
         patch("app.providers.pluggy.httpx.AsyncClient", return_value=_fake_http(calls)),
     ):
-        await get_provider("pluggy", WS_A)._ensure_api_key()
+        await _pluggy_provider(WS_A)._ensure_api_key()
         assert calls[0]["json"] == {"clientId": "client-a", "clientSecret": SECRET}
 
-        await get_provider("pluggy", None)._ensure_api_key()
+        await _pluggy_provider(None)._ensure_api_key()
         assert calls[1]["json"] == {
             "clientId": "instance-id",
             "clientSecret": "instance-secret",
@@ -272,8 +279,8 @@ async def test_api_key_cache_is_isolated_per_client(tmp_path, pluggy_registered)
         _patched_settings(settings),
         patch("app.providers.pluggy.httpx.AsyncClient", return_value=_fake_http(calls)),
     ):
-        key_a = await get_provider("pluggy", WS_A)._ensure_api_key()
-        key_b = await get_provider("pluggy", WS_B)._ensure_api_key()
+        key_a = await _pluggy_provider(WS_A)._ensure_api_key()
+        key_b = await _pluggy_provider(WS_B)._ensure_api_key()
 
         assert key_a != key_b
         assert len(calls) == 2
@@ -281,7 +288,7 @@ async def test_api_key_cache_is_isolated_per_client(tmp_path, pluggy_registered)
         assert PluggyProvider._api_keys["client-b"][0] == key_b
 
         # Same client again: the cached key is reused, no third /auth call.
-        assert await get_provider("pluggy", WS_A)._ensure_api_key() == key_a
+        assert await _pluggy_provider(WS_A)._ensure_api_key() == key_a
         assert len(calls) == 2
 
 
