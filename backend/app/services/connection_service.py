@@ -2390,8 +2390,9 @@ async def sync_connection(
     try:
         provider = get_provider(connection.provider, workspace_id=connection.workspace_id)
     except PluggyCredentialsError as exc:
-        # The message names the file, workspace and field, and the `.env` hint
-        # below would send the operator to the wrong place.
+        # A running sync only sees this when the workspace has no entry and the
+        # instance has no credentials: the provider is not configured, and the
+        # `.env` hint below would send the operator to the wrong place.
         raise ProviderNotConfiguredError(str(exc)) from exc
     except ValueError as exc:
         raise ProviderNotConfiguredError(

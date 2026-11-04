@@ -31,6 +31,24 @@ class PluggyCredentialsError(ValueError):
     """Raised when workspace Pluggy credentials are missing or malformed."""
 
 
+class _JsonObject(dict):
+    """JSON object that records keys repeated in the source text."""
+
+    def __init__(self, pairs: list[tuple[str, object]]) -> None:
+        super().__init__(pairs)
+        seen: set[str] = set()
+        self.duplicate_keys: list[str] = []
+        for key, _ in pairs:
+            if key in seen:
+                self.duplicate_keys.append(key)
+            seen.add(key)
+
+
+def _build_json_object(pairs: list[tuple[str, object]]) -> _JsonObject:
+    """Build a JSON object, keeping the keys the parser would silently drop."""
+    return _JsonObject(pairs)
+
+
 def parse_workspace_credentials(raw: str, source: str) -> dict[uuid.UUID, PluggyCredentials]:
     """Parse a JSON object mapping workspace UUIDs to Pluggy credentials.
 
@@ -38,14 +56,21 @@ def parse_workspace_credentials(raw: str, source: str) -> dict[uuid.UUID, Pluggy
     field; the client secret is never part of the message.
     """
     try:
-        data = json.loads(raw)
+        data = json.loads(raw, object_pairs_hook=_build_json_object)
     except json.JSONDecodeError as e:
         raise PluggyCredentialsError(f"{source}: invalid JSON: {e.msg}") from None
 
     if not isinstance(data, dict):
         raise PluggyCredentialsError(f"{source}: expected a JSON object at the top level")
 
+    duplicate_keys: list[str] = getattr(data, "duplicate_keys", [])
+    if duplicate_keys:
+        raise PluggyCredentialsError(
+            f"{source}: workspace key {duplicate_keys[0]!r} appears more than once"
+        )
+
     credentials: dict[uuid.UUID, PluggyCredentials] = {}
+    source_keys: dict[uuid.UUID, str] = {}
     for key, value in data.items():
         try:
             workspace_id = uuid.UUID(key)
@@ -53,6 +78,13 @@ def parse_workspace_credentials(raw: str, source: str) -> dict[uuid.UUID, Pluggy
             raise PluggyCredentialsError(
                 f"{source}: workspace key {key!r} is not a valid UUID"
             ) from None
+
+        if workspace_id in credentials:
+            raise PluggyCredentialsError(
+                f"{source}: workspace UUID {workspace_id} appears twice, "
+                f"as {source_keys[workspace_id]!r} and {key!r}"
+            )
+        source_keys[workspace_id] = key
 
         if not isinstance(value, dict):
             raise PluggyCredentialsError(f"{source}: workspace {key} must map to a JSON object")
@@ -124,5 +156,9 @@ def resolve_pluggy_credentials(workspace_id: uuid.UUID | None) -> PluggyCredenti
 
     credentials = instance_credentials()
     if credentials is None:
-        raise PluggyCredentialsError("Pluggy is not configured for this workspace")
+        if workspace_id is None:
+            raise PluggyCredentialsError("Pluggy is not configured")
+        raise PluggyCredentialsError(
+            f"Pluggy is not configured for workspace {workspace_id}"
+        )
     return credentials

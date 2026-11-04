@@ -8,10 +8,15 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import Settings
 from app.models.bank_connection import BankConnection
 from app.models.workspace import Workspace, WorkspaceMember
 from app.providers.base import ProviderNotConfiguredError
-from app.providers.pluggy_credentials import PluggyCredentialsError
+from app.providers.pluggy_credentials import (
+    PluggyCredentialsError,
+    get_workspace_credentials,
+    resolve_pluggy_credentials,
+)
 from app.services import connection_service
 from app.tasks import sync_tasks
 
@@ -255,6 +260,24 @@ async def test_fetch_holdings_resolves_the_provider_for_the_connection_workspace
 
 
 @pytest.mark.asyncio
+async def test_oauth_callback_resolves_the_provider_for_the_callback_workspace(
+    session: AsyncSession, test_user, test_workspace
+):
+    # The Pluggy widget returns the item id as `code`; the callback must resolve
+    # the provider for the workspace that started the flow.
+    with patch(
+        "app.services.connection_service.get_provider",
+        side_effect=RuntimeError("stop after resolution"),
+    ) as mock_get_provider:
+        with pytest.raises(RuntimeError):
+            await connection_service.handle_oauth_callback(
+                session, test_workspace.id, test_user.id, "item-id", "pluggy"
+            )
+
+    mock_get_provider.assert_called_once_with("pluggy", workspace_id=test_workspace.id)
+
+
+@pytest.mark.asyncio
 async def test_sync_connection_surfaces_the_credentials_error_message(
     session: AsyncSession, test_user, test_workspace
 ):
@@ -262,20 +285,30 @@ async def test_sync_connection_surfaces_the_credentials_error_message(
     session.add(connection)
     await session.commit()
 
-    message = (
-        f"/etc/securo/pluggy.json: workspace {test_workspace.id} is missing "
-        "the field 'client_secret'"
+    get_workspace_credentials.cache_clear()
+    empty_settings = Settings(
+        pluggy_client_id="",
+        pluggy_client_secret="",
+        pluggy_workspace_credentials_file="",
     )
 
-    with patch(
-        "app.services.connection_service.get_provider",
-        side_effect=PluggyCredentialsError(message),
+    with (
+        patch(
+            "app.providers.pluggy_credentials.get_settings",
+            return_value=empty_settings,
+        ),
+        patch(
+            "app.services.connection_service.get_provider",
+            side_effect=lambda _name, workspace_id: resolve_pluggy_credentials(workspace_id),
+        ),
     ):
         with pytest.raises(ProviderNotConfiguredError) as exc_info:
             await connection_service.sync_connection(
                 session, connection.id, test_workspace.id, test_user.id
             )
 
-    # The operator must be pointed at the credentials file, not the worker .env.
+    # A running sync can only see the "no entry, no instance credentials" case:
+    # the message must say so instead of pointing at the worker .env.
+    message = f"Pluggy is not configured for workspace {test_workspace.id}"
     assert str(exc_info.value) == message
     assert ".env" not in str(exc_info.value)
