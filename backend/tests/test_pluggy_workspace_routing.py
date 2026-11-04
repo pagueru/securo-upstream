@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.bank_connection import BankConnection
 from app.models.workspace import Workspace, WorkspaceMember
+from app.providers.base import ProviderNotConfiguredError
 from app.providers.pluggy_credentials import PluggyCredentialsError
 from app.services import connection_service
 from app.tasks import sync_tasks
@@ -231,3 +232,50 @@ async def test_institutions_route_passes_the_request_workspace(
 
     assert response.status_code == 200
     mock_get_provider.assert_called_once_with("pluggy", workspace_id=test_workspace.id)
+
+
+@pytest.mark.asyncio
+async def test_fetch_holdings_resolves_the_provider_for_the_connection_workspace(
+    session: AsyncSession, test_user, test_workspace
+):
+    connection = _make_connection(test_user.id, test_workspace.id, 5)
+    session.add(connection)
+    await session.commit()
+
+    provider = MagicMock()
+    provider.get_holdings = AsyncMock(return_value=[])
+
+    with patch(
+        "app.services.connection_service.get_provider", return_value=provider
+    ) as mock_get_provider:
+        holdings = await connection_service._fetch_holdings(connection, {})
+
+    assert holdings == []
+    mock_get_provider.assert_called_once_with("pluggy", workspace_id=test_workspace.id)
+
+
+@pytest.mark.asyncio
+async def test_sync_connection_surfaces_the_credentials_error_message(
+    session: AsyncSession, test_user, test_workspace
+):
+    connection = _make_connection(test_user.id, test_workspace.id, 6)
+    session.add(connection)
+    await session.commit()
+
+    message = (
+        f"/etc/securo/pluggy.json: workspace {test_workspace.id} is missing "
+        "the field 'client_secret'"
+    )
+
+    with patch(
+        "app.services.connection_service.get_provider",
+        side_effect=PluggyCredentialsError(message),
+    ):
+        with pytest.raises(ProviderNotConfiguredError) as exc_info:
+            await connection_service.sync_connection(
+                session, connection.id, test_workspace.id, test_user.id
+            )
+
+    # The operator must be pointed at the credentials file, not the worker .env.
+    assert str(exc_info.value) == message
+    assert ".env" not in str(exc_info.value)

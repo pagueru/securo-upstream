@@ -38,6 +38,7 @@ from app.providers.base import (
     SessionExpiredError,
     TransactionData,
 )
+from app.providers.pluggy_credentials import PluggyCredentialsError
 from app.services import oauth_state
 from app.services import admin_service
 from app.services import category_line_service, reconciliation_service, recurring_match_service
@@ -2388,6 +2389,10 @@ async def sync_connection(
     # wrongly stamp the (healthy) connection with status="error".
     try:
         provider = get_provider(connection.provider, workspace_id=connection.workspace_id)
+    except PluggyCredentialsError as exc:
+        # The message names the file, workspace and field, and the `.env` hint
+        # below would send the operator to the wrong place.
+        raise ProviderNotConfiguredError(str(exc)) from exc
     except ValueError as exc:
         raise ProviderNotConfiguredError(
             f"Provider '{connection.provider}' is not configured in this process. "
